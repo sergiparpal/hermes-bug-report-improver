@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from bug_report_improver import handler, prompts, schema
+from bug_report_improver import domain, engine, handler, prompts, schema, validation
 
 EXAMPLE_A = prompts.FEW_SHOT_EXAMPLES[0]["output"]  # vague   -> unknown
 EXAMPLE_B = prompts.FEW_SHOT_EXAMPLES[1]["output"]  # detailed-> high
@@ -197,7 +197,7 @@ def test_invalid_llm_response_retries_once(mock_ctx):
     out = _run_json(ctx, format="json")
     assert out["severity"] == "high"
     assert len(ctx.llm.calls) == 2
-    assert handler._RETRY_SUFFIX in ctx.llm.calls[1]["instructions"]
+    assert engine._RETRY_SUFFIX in ctx.llm.calls[1]["instructions"]
 
 
 def test_invalid_llm_response_returns_error_on_second_failure(mock_ctx):
@@ -222,7 +222,7 @@ def test_host_value_error_triggers_retry(mock_ctx):
     out = _run_json(ctx, format="json")
     assert out["severity"] == "high"
     assert len(ctx.llm.calls) == 2
-    assert handler._RETRY_SUFFIX in ctx.llm.calls[1]["instructions"]
+    assert engine._RETRY_SUFFIX in ctx.llm.calls[1]["instructions"]
 
 
 def test_host_value_error_on_both_attempts_returns_error(mock_ctx):
@@ -245,56 +245,72 @@ def test_llm_unavailable_returns_error(no_llm_ctx):
     assert "error" in out and "unavailable" in out["error"].lower()
 
 
-# --- output coercion unit tests ------------------------------------------------
+# --- domain coercion unit tests (ImprovedBugReport.from_parsed) -----------------
 def test_schema_validates_required_fields():
     incomplete = {k: v for k, v in EXAMPLE_B.items() if k != "title"}
     with pytest.raises(ValueError):
-        handler._coerce_report(incomplete)
+        domain.ImprovedBugReport.from_parsed(incomplete)
 
 
 def test_coerce_rejects_bad_severity():
     with pytest.raises(ValueError):
-        handler._coerce_report(dict(EXAMPLE_B, severity="nope"))
+        domain.ImprovedBugReport.from_parsed(dict(EXAMPLE_B, severity="nope"))
 
 
 def test_coerce_rejects_non_array_steps():
     with pytest.raises(ValueError):
-        handler._coerce_report(dict(EXAMPLE_B, reproduction_steps="1. do x"))
+        domain.ImprovedBugReport.from_parsed(dict(EXAMPLE_B, reproduction_steps="1. do x"))
 
 
 def test_coerce_rejects_non_dict():
     with pytest.raises(ValueError):
-        handler._coerce_report(["not", "a", "dict"])
+        domain.ImprovedBugReport.from_parsed(["not", "a", "dict"])
 
 
 def test_validate_input_rejects_non_dict_directly():
     # The handler coerces non-dict args to {}, but the guard is defensive.
     with pytest.raises(ValueError):
-        handler._validate_input("not a dict")
+        validation.validate_input("not a dict")
 
 
 def test_coerce_normalizes_types():
-    r = handler._coerce_report(EXAMPLE_A)
-    assert isinstance(r["reproduction_steps"], list)
-    assert all(isinstance(s, str) for s in r["missing_evidence"])
+    r = domain.ImprovedBugReport.from_parsed(EXAMPLE_A)
+    assert isinstance(r.reproduction_steps, list)
+    assert all(isinstance(s, str) for s in r.missing_evidence)
 
 
 def test_coerce_truncates_overlong_title():
-    r = handler._coerce_report(dict(EXAMPLE_B, title="T" * 200))
-    assert len(r["title"]) <= schema.MAX_TITLE_CHARS
-    assert r["title"].endswith("…")
+    r = domain.ImprovedBugReport.from_parsed(dict(EXAMPLE_B, title="T" * 200))
+    assert len(r.title) <= schema.MAX_TITLE_CHARS
+    assert r.title.endswith("…")
 
 
 def test_coerce_flattens_title_newlines():
-    r = handler._coerce_report(dict(EXAMPLE_B, title="line one\nline two"))
-    assert r["title"] == "line one line two"
+    r = domain.ImprovedBugReport.from_parsed(dict(EXAMPLE_B, title="line one\nline two"))
+    assert r.title == "line one line two"
+
+
+def test_title_invariant_holds_on_direct_construction():
+    # __post_init__ enforces the single-line, length-capped title for any
+    # construction path, not only via from_parsed.
+    r = domain.ImprovedBugReport(
+        title="x" * 200,
+        summary="",
+        reproduction_steps=[],
+        expected_behavior="",
+        actual_behavior="",
+        severity="unknown",
+        severity_rationale="",
+        missing_evidence=[],
+    )
+    assert len(r.title) <= schema.MAX_TITLE_CHARS and r.title.endswith("…")
 
 
 # --- prompt / rubric consistency ----------------------------------------------
 def test_few_shot_examples_conform_to_schema():
     for ex in prompts.FEW_SHOT_EXAMPLES:
-        r = handler._coerce_report(ex["output"])
-        assert len(r["title"]) <= 80
+        r = domain.ImprovedBugReport.from_parsed(ex["output"])
+        assert len(r.title) <= 80
 
 
 def test_rubric_keys_match_severity_levels():

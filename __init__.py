@@ -10,15 +10,15 @@ list of missing evidence) by delegating the rewrite to the agent's own model via
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from . import schema
 from .handler import make_command, make_handler
+from .host import PluginHost
 
 logger = logging.getLogger(__name__)
 
 
-def register(ctx: Any) -> None:
+def register(ctx: PluginHost) -> None:
     """Entry point Hermes calls once at plugin load time."""
     tool_handler = make_handler(ctx)
     ctx.register_tool(
