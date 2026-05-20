@@ -38,7 +38,7 @@ def register(ctx: Any) -> None:
     try:
         ctx.register_command(
             name="improve-bug",
-            handler=make_command(ctx, tool_handler),
+            handler=make_command(ctx),
             description="Rewrite a raw bug report into a structured one (Markdown).",
             args_hint="<raw bug report text>",
         )

@@ -11,6 +11,12 @@ from pathlib import Path
 import pytest
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
+# This unit has three names, all intentional: the plugin/directory is
+# ``hermes-bug-report-improver`` (hyphenated, so not importable as-is); pip
+# installs it as ``hermes_bug_report_improver`` (see pyproject.toml); and at
+# runtime Hermes loads the directory under a plain module name. Relative imports
+# (``from . import schema``) keep the modules agnostic to which name is used, so
+# the tests pick the short ``bug_report_improver`` and load it explicitly below.
 PKG = "bug_report_improver"
 
 

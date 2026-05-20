@@ -18,9 +18,14 @@ def _run(ctx, **args):
     return handler.make_handler(ctx)(args)
 
 
+def _run_json(ctx, **args):
+    """Run the handler and parse its JSON output (success envelope or error)."""
+    return json.loads(_run(ctx, **args))
+
+
 # --- input validation ----------------------------------------------------------
 def test_empty_input_returns_error(mock_ctx):
-    out = json.loads(handler.make_handler(mock_ctx())({"raw_text": ""}))
+    out = _run_json(mock_ctx(), raw_text="")
     assert "error" in out
 
 
@@ -36,34 +41,34 @@ def test_non_dict_args_returns_error(mock_ctx):
 
 def test_oversized_input_returns_error(mock_ctx):
     big = "x" * (schema.MAX_RAW_TEXT_BYTES + 1)
-    out = json.loads(handler.make_handler(mock_ctx())({"raw_text": big}))
+    out = _run_json(mock_ctx(), raw_text=big)
     assert "error" in out and "KB" in out["error"]
 
 
 def test_oversized_context_returns_error(mock_ctx):
     big = "x" * (schema.MAX_CONTEXT_BYTES + 1)
-    out = json.loads(_run(mock_ctx(), context=big))
+    out = _run_json(mock_ctx(), context=big)
     assert "error" in out and "KB" in out["error"]
 
 
 def test_invalid_format_returns_error(mock_ctx):
-    out = json.loads(_run(mock_ctx(), format="xml"))
+    out = _run_json(mock_ctx(), format="xml")
     assert "error" in out
 
 
 def test_non_string_context_returns_error(mock_ctx):
-    out = json.loads(_run(mock_ctx(), context=123))
+    out = _run_json(mock_ctx(), context=123)
     assert "error" in out
 
 
 def test_falsy_non_string_context_returns_error(mock_ctx):
     # Falsy non-strings ([], {}, 0, False) are rejected, not coerced to "".
-    out = json.loads(_run(mock_ctx(), context=[]))
+    out = _run_json(mock_ctx(), context=[])
     assert "error" in out
 
 
 def test_non_string_format_returns_error(mock_ctx):
-    out = json.loads(_run(mock_ctx(), format=123))
+    out = _run_json(mock_ctx(), format=123)
     assert "error" in out
 
 
@@ -73,20 +78,20 @@ def test_empty_format_defaults_to_markdown(mock_ctx):
 
 # --- the three canonical examples ----------------------------------------------
 def test_vague_input_lists_missing_evidence(mock_ctx):
-    out = json.loads(_run(mock_ctx([EXAMPLE_A]), raw_text="login broken sometimes", format="json"))
+    out = _run_json(mock_ctx([EXAMPLE_A]), raw_text="login broken sometimes", format="json")
     assert out["severity"] == "unknown"
     assert out["reproduction_steps"] == []
     assert len(out["missing_evidence"]) >= 4
 
 
 def test_detailed_input_returns_high_severity(mock_ctx):
-    out = json.loads(_run(mock_ctx([EXAMPLE_B]), format="json"))
+    out = _run_json(mock_ctx([EXAMPLE_B]), format="json")
     assert out["severity"] == "high"
     assert out["missing_evidence"] == []
 
 
 def test_multi_bug_input_flags_extras(mock_ctx):
-    out = json.loads(_run(mock_ctx([EXAMPLE_C]), format="json"))
+    out = _run_json(mock_ctx([EXAMPLE_C]), format="json")
     assert any(
         ("separate" in e.lower()) or ("second" in e.lower()) for e in out["missing_evidence"]
     )
@@ -111,7 +116,7 @@ def test_default_format_is_markdown(mock_ctx):
 
 
 def test_json_format_returns_valid_json(mock_ctx):
-    obj = json.loads(_run(mock_ctx([EXAMPLE_A]), format="json"))
+    obj = _run_json(mock_ctx([EXAMPLE_A]), format="json")
     assert set(obj) == set(schema.REQUIRED_OUTPUT_FIELDS)
 
 
@@ -160,7 +165,7 @@ def test_json_format_is_byte_faithful(mock_ctx):
     # The json path returns exact text (no HTML-escaping); structural safety is
     # the encoder's job, display escaping is the consumer's.
     evil = dict(EXAMPLE_B, summary="a < b & c")
-    out = json.loads(_run(mock_ctx([evil]), format="json"))
+    out = _run_json(mock_ctx([evil]), format="json")
     assert out["summary"] == "a < b & c"
 
 
@@ -189,7 +194,7 @@ def test_handler_tolerates_kwargs_invocation(mock_ctx):
 # --- retry logic ---------------------------------------------------------------
 def test_invalid_llm_response_retries_once(mock_ctx):
     ctx = mock_ctx([None, EXAMPLE_B])  # unparseable, then good
-    out = json.loads(_run(ctx, format="json"))
+    out = _run_json(ctx, format="json")
     assert out["severity"] == "high"
     assert len(ctx.llm.calls) == 2
     assert handler._RETRY_SUFFIX in ctx.llm.calls[1]["instructions"]
@@ -197,7 +202,7 @@ def test_invalid_llm_response_retries_once(mock_ctx):
 
 def test_invalid_llm_response_returns_error_on_second_failure(mock_ctx):
     ctx = mock_ctx([None, None])
-    out = json.loads(_run(ctx))
+    out = _run_json(ctx)
     assert "error" in out
     assert len(ctx.llm.calls) == 2  # exactly one retry, no more
 
@@ -205,7 +210,7 @@ def test_invalid_llm_response_returns_error_on_second_failure(mock_ctx):
 def test_structurally_invalid_output_triggers_retry(mock_ctx):
     bad = dict(EXAMPLE_B, severity="catastrophic")  # invalid severity
     ctx = mock_ctx([bad, EXAMPLE_B])
-    out = json.loads(_run(ctx, format="json"))
+    out = _run_json(ctx, format="json")
     assert out["severity"] == "high"
     assert len(ctx.llm.calls) == 2
 
@@ -214,7 +219,7 @@ def test_host_value_error_triggers_retry(mock_ctx):
     # A host enforcing the schema (optional jsonschema) raises ValueError on a
     # violation; that is retryable, not surfaced immediately.
     ctx = mock_ctx([ValueError("output did not match schema"), EXAMPLE_B])
-    out = json.loads(_run(ctx, format="json"))
+    out = _run_json(ctx, format="json")
     assert out["severity"] == "high"
     assert len(ctx.llm.calls) == 2
     assert handler._RETRY_SUFFIX in ctx.llm.calls[1]["instructions"]
@@ -222,21 +227,21 @@ def test_host_value_error_triggers_retry(mock_ctx):
 
 def test_host_value_error_on_both_attempts_returns_error(mock_ctx):
     ctx = mock_ctx([ValueError("bad"), ValueError("bad again")])
-    out = json.loads(_run(ctx))
+    out = _run_json(ctx)
     assert "error" in out
     assert len(ctx.llm.calls) == 2  # exactly one retry, then give up
 
 
 # --- failure modes -------------------------------------------------------------
 def test_llm_exception_returns_error(mock_ctx):
-    out = json.loads(_run(mock_ctx([RuntimeError("secret-internal-detail")])))
+    out = _run_json(mock_ctx([RuntimeError("secret-internal-detail")]))
     assert "error" in out
     # Raw exception text must not be reflected to the caller (it is logged).
     assert "secret-internal-detail" not in out["error"]
 
 
 def test_llm_unavailable_returns_error(no_llm_ctx):
-    out = json.loads(_run(no_llm_ctx))
+    out = _run_json(no_llm_ctx)
     assert "error" in out and "unavailable" in out["error"].lower()
 
 
@@ -338,12 +343,6 @@ def test_command_returns_markdown_on_success(mock_ctx):
 def test_command_prettifies_error(no_llm_ctx):
     out = handler.make_command(no_llm_ctx)("something")
     assert out.startswith("Could not improve the report:")
-
-
-def test_command_passes_through_unexpected_json():
-    # Defensive: JSON output without an "error" key is returned unchanged.
-    cmd = handler.make_command(None, tool_handler=lambda args: '{"ok": true}')
-    assert cmd("x") == '{"ok": true}'
 
 
 def test_register_also_registers_command():

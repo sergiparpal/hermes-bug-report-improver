@@ -19,6 +19,11 @@ dev = ["pytest>=7", "coverage>=7"]
 # Flat layout: the plugin modules live at the repo root and form a package
 # (relative imports such as `from . import schema` require this). Map that
 # package explicitly so the project is pip-installable; `tests/` is excluded.
+# The name has three intentional forms: the plugin directory is
+# `hermes-bug-report-improver` (hyphenated), the pip-installed package is
+# `hermes_bug_report_improver` (below), and the tests import it as
+# `bug_report_improver` (see tests/conftest.py). Relative imports make the code
+# agnostic to which name it is loaded under.
 [tool.setuptools]
 packages = ["hermes_bug_report_improver"]
 
