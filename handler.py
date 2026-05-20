@@ -5,9 +5,10 @@ never raising. They do not receive ``ctx`` directly, so the handler is produced
 by ``make_handler(ctx)`` and closes over ``ctx`` to reach ``ctx.llm`` (the same
 pattern the official ``plugin-llm-example`` uses).
 
-Phase 2 returns a hardcoded sample. Phase 4 replaces ``_build_report`` with a
-real ``ctx.llm.complete_structured`` call. Everything else (validation, output
-coercion, Markdown rendering, format dispatch, error envelope) is final.
+The rewrite is delegated to ``ctx.llm.complete_structured`` with the output
+schema, so the host enforces the JSON shape and returns ``result.parsed``. We add
+one retry (with a stricter directive) for the case where ``parsed`` is missing or
+fails validation, then fall back to a structured error.
 """
 
 from __future__ import annotations
@@ -15,11 +16,26 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
-from . import schema
+from . import prompts, schema
 
 logger = logging.getLogger(__name__)
+
+# Generation settings for the structured call.
+_MAX_TOKENS = 1024
+_TEMPERATURE = 0.0
+_SCHEMA_NAME = "bug_report.improved"
+_PURPOSE = "hermes-bug-report-improver.improve_bug_report"
+_RETRY_SUFFIX = (
+    "Your previous response was not valid JSON matching the schema. Reply with "
+    "valid JSON only — no Markdown, no code fences, no commentary — using exactly "
+    "the required fields."
+)
+
+
+class LlmUnavailable(RuntimeError):
+    """Raised when ``ctx.llm`` is not present so we can report it cleanly."""
 
 
 @dataclass
@@ -138,22 +154,50 @@ def _format_output(report: dict[str, Any], fmt: str) -> str:
     return _render_markdown(report)
 
 
-# --- Report production (Phase 2: hardcoded; Phase 4: ctx.llm) ------------------
-_SAMPLE_REPORT = {
-    "title": "Sample structured bug report",
-    "summary": "Hardcoded Phase 2 sample so the tool contract is observable end-to-end.",
-    "reproduction_steps": ["Open the editor", "Click Save"],
-    "expected_behavior": "The document saves successfully.",
-    "actual_behavior": "The application crashes.",
-    "severity": "unknown",
-    "severity_rationale": "Hardcoded sample; severity is not assessed in Phase 2.",
-    "missing_evidence": ["Operating system and version", "Exact error message"],
-}
+# --- LLM call ------------------------------------------------------------------
+def _input_blocks(raw_text: str, context: str) -> list[dict[str, str]]:
+    text = raw_text
+    if context.strip():
+        text = f"{raw_text}\n\n[Additional context: {context.strip()}]"
+    return [{"type": "text", "text": text}]
+
+
+def _attempt(ctx: Any, instructions: str, input_blocks: list) -> Optional[dict[str, Any]]:
+    """One structured call. Returns a coerced report, or None if unusable."""
+    result = ctx.llm.complete_structured(
+        instructions=instructions,
+        input=input_blocks,
+        json_schema=schema.BUG_REPORT_OUTPUT_SCHEMA,
+        schema_name=_SCHEMA_NAME,
+        purpose=_PURPOSE,
+        temperature=_TEMPERATURE,
+        max_tokens=_MAX_TOKENS,
+    )
+    parsed = getattr(result, "parsed", None)
+    if parsed is None:
+        logger.debug("complete_structured returned no parsed JSON")
+        return None
+    try:
+        return _coerce_report(parsed)
+    except ValueError as exc:
+        logger.debug("parsed output failed validation: %s", exc)
+        return None
 
 
 def _build_report(ctx: Any, raw_text: str, context: str) -> dict[str, Any]:
-    """Phase 2 stand-in. Phase 4 calls ctx.llm.complete_structured here."""
-    return _coerce_report(_SAMPLE_REPORT)
+    """Delegate the rewrite to the agent's model. Raise on unrecoverable failure."""
+    if getattr(ctx, "llm", None) is None:
+        raise LlmUnavailable("ctx.llm is not available")
+
+    instructions = prompts.build_instructions()
+    blocks = _input_blocks(raw_text, context)
+
+    report = _attempt(ctx, instructions, blocks)
+    if report is None:  # retry once with a stricter directive
+        report = _attempt(ctx, f"{instructions}\n\n{_RETRY_SUFFIX}", blocks)
+    if report is None:
+        raise ValueError("model did not return a valid structured report after one retry")
+    return report
 
 
 # --- Public factory ------------------------------------------------------------
@@ -170,8 +214,13 @@ def make_handler(ctx: Any) -> Callable[..., str]:
 
         try:
             report = _build_report(ctx, raw_text, context)
+        except LlmUnavailable as exc:
+            return _error(f"LLM is unavailable: {exc}")
         except ValueError as exc:
             return _error(f"could not build a structured report: {exc}")
+        except Exception as exc:  # noqa: BLE001 - tool handlers must never raise
+            logger.warning("improve_bug_report failed: %s", exc)
+            return _error(f"unexpected error while improving the report: {exc}")
 
         return _format_output(report, fmt)
 
