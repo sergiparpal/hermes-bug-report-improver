@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+branch = true
+
+[tool.coverage.report]
+include = ["*/handler.py"]
+show_missing = true

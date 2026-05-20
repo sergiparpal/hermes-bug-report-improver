@@ -1,0 +1,13 @@
+# coding agents files
+.codex/
+.claude/
+
+# Python cache files
+__pycache__/
+tests/__pycache__/
+
+# local dev/test tooling and artifacts
+.venv/
+.covtools/
+.coverage
+.pytest_cache/
