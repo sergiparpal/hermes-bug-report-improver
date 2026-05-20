@@ -1,0 +1,14 @@
+name: hermes-bug-report-improver
+version: 0.1.0
+description: >-
+  Takes a poorly written or incomplete bug report and returns a structured
+  version with title, reproduction steps, expected and actual behavior,
+  suggested severity, and a list of missing evidence. Does not invent missing
+  facts. Delegates the rewrite to the agent's own model via ctx.llm.
+author: sergiparpal
+license: GPL-3.0-or-later
+# Read for display; the current loader does not enforce it. The handler degrades
+# gracefully (structured error, never raises) if ctx.llm is unavailable.
+requires_hermes_version: "0.13.0"
+provides_tools:
+  - improve_bug_report
