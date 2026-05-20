@@ -228,3 +228,64 @@ def test_register_wires_tool():
     assert captured["schema"]["name"] == "improve_bug_report"
     assert "raw_text" in captured["schema"]["parameters"]["properties"]
     assert callable(captured["handler"])
+
+
+# --- optional /improve-bug slash command ---------------------------------------
+def test_command_usage_on_empty(mock_ctx):
+    cmd = handler.make_command(mock_ctx())
+    assert cmd("").startswith("Usage:")
+    assert cmd("   ").startswith("Usage:")
+
+
+def test_command_returns_markdown_on_success(mock_ctx):
+    out = handler.make_command(mock_ctx([EXAMPLE_B]))("checkout broken on safari")
+    assert out.startswith("# ") and "## Severity: high" in out
+
+
+def test_command_prettifies_error(no_llm_ctx):
+    out = handler.make_command(no_llm_ctx)("something")
+    assert out.startswith("Could not improve the report:")
+
+
+def test_command_passes_through_unexpected_json():
+    # Defensive: JSON output without an "error" key is returned unchanged.
+    cmd = handler.make_command(None, tool_handler=lambda args: '{"ok": true}')
+    assert cmd("x") == '{"ok": true}'
+
+
+def test_register_also_registers_command():
+    import bug_report_improver as plugin
+
+    tools: dict = {}
+    cmds: dict = {}
+
+    class C:
+        llm = None
+
+        def register_tool(self, **kw):
+            tools.update(kw)
+
+        def register_command(self, **kw):
+            cmds.update(kw)
+
+    plugin.register(C())
+    assert tools["name"] == "improve_bug_report"
+    assert cmds["name"] == "improve-bug" and callable(cmds["handler"])
+
+
+def test_register_survives_command_failure():
+    import bug_report_improver as plugin
+
+    tools: dict = {}
+
+    class C:
+        llm = None
+
+        def register_tool(self, **kw):
+            tools.update(kw)
+
+        def register_command(self, **kw):
+            raise TypeError("unexpected kwarg args_hint")
+
+    plugin.register(C())  # must not raise
+    assert tools["name"] == "improve_bug_report"  # core tool still registered

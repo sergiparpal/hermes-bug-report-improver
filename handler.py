@@ -226,3 +226,28 @@ def make_handler(ctx: Any) -> Callable[..., str]:
 
     improve_bug_report.__name__ = schema.TOOL_NAME
     return improve_bug_report
+
+
+def make_command(ctx: Any, tool_handler: Optional[Callable[..., str]] = None) -> Callable[[str], str]:
+    """Build the optional ``/improve-bug`` slash-command handler.
+
+    Slash-command handlers receive the raw argument string and return a string
+    shown directly to the user, so this renders Markdown and unwraps the tool's
+    JSON error envelope into a readable line.
+    """
+    handler_fn = tool_handler or make_handler(ctx)
+
+    def improve_bug(raw_args: str = "") -> str:
+        text = (raw_args or "").strip()
+        if not text:
+            return "Usage: /improve-bug <paste the raw bug report text>"
+        result = handler_fn({"raw_text": text, "format": "markdown"})
+        try:
+            payload = json.loads(result)
+        except (ValueError, TypeError):
+            return result  # Markdown success output (not JSON).
+        if isinstance(payload, dict) and "error" in payload:
+            return f"Could not improve the report: {payload['error']}"
+        return result
+
+    return improve_bug

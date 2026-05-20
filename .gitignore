@@ -11,3 +11,6 @@ tests/__pycache__/
 .covtools/
 .coverage
 .pytest_cache/
+
+# Windows/WSL "mark of the web" metadata
+*:Zone.Identifier
