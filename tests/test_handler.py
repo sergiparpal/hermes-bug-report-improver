@@ -50,6 +50,21 @@ def test_non_string_context_returns_error(mock_ctx):
     assert "error" in out
 
 
+def test_falsy_non_string_context_returns_error(mock_ctx):
+    # Falsy non-strings ([], {}, 0, False) are rejected, not coerced to "".
+    out = json.loads(_run(mock_ctx(), context=[]))
+    assert "error" in out
+
+
+def test_non_string_format_returns_error(mock_ctx):
+    out = json.loads(_run(mock_ctx(), format=123))
+    assert "error" in out
+
+
+def test_empty_format_defaults_to_markdown(mock_ctx):
+    assert _run(mock_ctx([EXAMPLE_B]), format="").startswith("# ")
+
+
 # --- the three canonical examples ----------------------------------------------
 def test_vague_input_lists_missing_evidence(mock_ctx):
     out = json.loads(_run(mock_ctx([EXAMPLE_A]), raw_text="login broken sometimes", format="json"))
@@ -101,6 +116,12 @@ def test_markdown_handles_empty_steps_and_evidence(mock_ctx):
     assert "_None — the report appears complete._" in md_b
 
 
+def test_markdown_empty_summary_and_rationale_use_fallback(mock_ctx):
+    sparse = dict(EXAMPLE_B, summary="", severity_rationale="")
+    md = _run(mock_ctx([sparse]), format="markdown")
+    assert md.count("_Not provided._") >= 2  # summary slot + rationale slot
+
+
 # --- call wiring ---------------------------------------------------------------
 def test_context_is_passed_to_model(mock_ctx):
     ctx = mock_ctx([EXAMPLE_B])
@@ -145,6 +166,23 @@ def test_structurally_invalid_output_triggers_retry(mock_ctx):
     out = json.loads(_run(ctx, format="json"))
     assert out["severity"] == "high"
     assert len(ctx.llm.calls) == 2
+
+
+def test_host_value_error_triggers_retry(mock_ctx):
+    # A host enforcing the schema (optional jsonschema) raises ValueError on a
+    # violation; that is retryable, not surfaced immediately.
+    ctx = mock_ctx([ValueError("output did not match schema"), EXAMPLE_B])
+    out = json.loads(_run(ctx, format="json"))
+    assert out["severity"] == "high"
+    assert len(ctx.llm.calls) == 2
+    assert handler._RETRY_SUFFIX in ctx.llm.calls[1]["instructions"]
+
+
+def test_host_value_error_on_both_attempts_returns_error(mock_ctx):
+    ctx = mock_ctx([ValueError("bad"), ValueError("bad again")])
+    out = json.loads(_run(ctx))
+    assert "error" in out
+    assert len(ctx.llm.calls) == 2  # exactly one retry, then give up
 
 
 # --- failure modes -------------------------------------------------------------
@@ -192,6 +230,17 @@ def test_coerce_normalizes_types():
     assert all(isinstance(s, str) for s in r["missing_evidence"])
 
 
+def test_coerce_truncates_overlong_title():
+    r = handler._coerce_report(dict(EXAMPLE_B, title="T" * 200))
+    assert len(r["title"]) <= schema.MAX_TITLE_CHARS
+    assert r["title"].endswith("…")
+
+
+def test_coerce_flattens_title_newlines():
+    r = handler._coerce_report(dict(EXAMPLE_B, title="line one\nline two"))
+    assert r["title"] == "line one line two"
+
+
 # --- prompt / rubric consistency ----------------------------------------------
 def test_few_shot_examples_conform_to_schema():
     for ex in prompts.FEW_SHOT_EXAMPLES:
@@ -205,7 +254,7 @@ def test_rubric_keys_match_severity_levels():
 
 def test_instructions_include_rubric_and_examples():
     ins = prompts.build_instructions()
-    assert ins.count("Input:") == 3
+    assert ins.count("Input:") == len(prompts.FEW_SHOT_EXAMPLES)
     for level in schema.SEVERITY_LEVELS:
         assert f"- {level}:" in ins
 

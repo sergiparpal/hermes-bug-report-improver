@@ -1,10 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-bug-report-improver"
+version = "0.1.0"
+description = "Hermes Agent plugin that rewrites raw bug reports into structured ones."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-only" }
+authors = [{ name = "sergiparpal" }]
+keywords = ["hermes", "hermes-agent", "plugin", "bug-report", "qa"]
+
+[project.optional-dependencies]
+# Dev/test tooling only; the plugin itself has no runtime dependencies.
+dev = ["pytest>=7", "coverage>=7"]
+
+# Flat layout: the plugin modules live at the repo root and form a package
+# (relative imports such as `from . import schema` require this). Map that
+# package explicitly so the project is pip-installable; `tests/` is excluded.
+[tool.setuptools]
+packages = ["hermes_bug_report_improver"]
+
+[tool.setuptools.package-dir]
+hermes_bug_report_improver = "."
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
 
 [tool.coverage.run]
 branch = true
+source = ["."]
+omit = ["tests/*", ".covtools/*"]
 
 [tool.coverage.report]
-include = ["*/handler.py"]
 show_missing = true

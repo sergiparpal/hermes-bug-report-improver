@@ -1,9 +1,9 @@
 """System prompt, severity-rubric rendering, and few-shot examples.
 
-Design decision (plan Phase 3): the model is instructed to ALWAYS return a single
-JSON object; the handler renders Markdown afterwards. The JSON shape is also
-enforced by ``ctx.llm.complete_structured(json_schema=...)``. A single JSON
-contract keeps validation deterministic.
+Design decision: the model is instructed to ALWAYS return a single JSON object;
+the handler renders Markdown afterwards. The JSON shape is also enforced by
+``ctx.llm.complete_structured(json_schema=...)``. A single JSON contract keeps
+validation deterministic.
 
 The ``FEW_SHOT_EXAMPLES`` outputs double as test fixtures (they conform to
 ``schema.BUG_REPORT_OUTPUT_SCHEMA``) — see ``tests/``.
@@ -11,12 +11,14 @@ The ``FEW_SHOT_EXAMPLES`` outputs double as test fixtures (they conform to
 
 from __future__ import annotations
 
+import functools
 import json
 
 from . import schema
 
-# Core system prompt, kept under ~400 words. Behavioral rules: §2.2.
-# {rubric} is substituted (via str.replace) with the rendered §2.3 rubric.
+# Core system prompt, kept under ~400 words.
+# {rubric} is substituted (via str.replace) with the rendered severity rubric,
+# and {max_title} with the title-length cap.
 SYSTEM_PROMPT = """\
 You are a meticulous bug-report editor. You turn a raw, often vague or incomplete
 bug report into one clean, structured report. Return a single JSON object and
@@ -36,7 +38,7 @@ Rules:
    were detected and should be filed separately.
 
 Field guidance:
-- `title`: at most 80 characters, specific.
+- `title`: at most {max_title} characters, specific.
 - `summary`: 1-2 sentences.
 - `reproduction_steps`: an ordered array; use [] if the report gives none (and
   add a `missing_evidence` entry).
@@ -57,7 +59,7 @@ def _render_rubric() -> str:
     )
 
 
-# Three few-shot examples (plan Phase 3). Outputs conform to the output schema.
+# Three few-shot examples. Outputs conform to the output schema.
 FEW_SHOT_EXAMPLES: list[dict] = [
     # Example A — vague one-liner -> many missing_evidence, severity unknown.
     {
@@ -162,9 +164,16 @@ FEW_SHOT_EXAMPLES: list[dict] = [
 ]
 
 
+@functools.lru_cache(maxsize=1)
 def build_instructions() -> str:
-    """Assemble the full ``instructions`` string for ``complete_structured``."""
-    parts = [SYSTEM_PROMPT.replace("{rubric}", _render_rubric()), "Worked examples:"]
+    """Assemble the full ``instructions`` string for ``complete_structured``.
+
+    Deterministic (no inputs), so the result is cached and built once.
+    """
+    system = SYSTEM_PROMPT.replace("{rubric}", _render_rubric()).replace(
+        "{max_title}", str(schema.MAX_TITLE_CHARS)
+    )
+    parts = [system, "Worked examples:"]
     for i, example in enumerate(FEW_SHOT_EXAMPLES, 1):
         parts.append(
             f"\nExample {i}\nInput:\n{example['input']}\n"

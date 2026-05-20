@@ -16,14 +16,17 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from . import prompts, schema
 
 logger = logging.getLogger(__name__)
 
-# Generation settings for the structured call.
-_MAX_TOKENS = 1024
+# Generation settings for the structured call. The retry uses a larger token
+# budget so a first attempt that failed by truncation (e.g. a long verbatim
+# stack trace) has room to complete the second time.
+_MAX_TOKENS = 2048
+_RETRY_MAX_TOKENS = 4096
 _TEMPERATURE = 0.0
 _SCHEMA_NAME = "bug_report.improved"
 _PURPOSE = "hermes-bug-report-improver.improve_bug_report"
@@ -40,7 +43,7 @@ class LlmUnavailable(RuntimeError):
 
 @dataclass
 class ImprovedBugReport:
-    """Canonical output structure (§2.1), independent of the chosen format."""
+    """Canonical output structure, independent of the chosen format."""
 
     title: str
     summary: str
@@ -73,11 +76,17 @@ def _validate_input(args: Any) -> tuple[str, str, str]:
         kb = schema.MAX_RAW_TEXT_BYTES // 1024
         raise ValueError(f"`raw_text` exceeds the {kb} KB limit.")
 
-    context = args.get("context", "") or ""
+    context = args.get("context")
+    if context is None:  # absent or JSON null -> treat as empty
+        context = ""
     if not isinstance(context, str):
         raise ValueError("`context` must be a string.")
 
-    fmt = args.get("format") or schema.DEFAULT_FORMAT
+    fmt = args.get("format")
+    if fmt is None or fmt == "":  # absent, null, or empty -> default
+        fmt = schema.DEFAULT_FORMAT
+    if not isinstance(fmt, str):
+        raise ValueError("`format` must be a string.")
     if fmt not in schema.ALLOWED_FORMATS:
         allowed = ", ".join(schema.ALLOWED_FORMATS)
         raise ValueError(f"`format` must be one of: {allowed}.")
@@ -104,8 +113,14 @@ def _coerce_report(data: Any) -> dict[str, Any]:
         if not isinstance(data.get(arr), list):
             raise ValueError(f"`{arr}` must be an array")
 
+    # Flatten the title to a single line (a stray newline would break the
+    # Markdown heading) and enforce the documented length cap.
+    title = " ".join(str(data["title"]).split())
+    if len(title) > schema.MAX_TITLE_CHARS:
+        title = title[: schema.MAX_TITLE_CHARS - 1].rstrip() + "…"
+
     report = ImprovedBugReport(
-        title=str(data["title"]),
+        title=title,
         summary=str(data["summary"]),
         reproduction_steps=[str(s) for s in data["reproduction_steps"]],
         expected_behavior=str(data["expected_behavior"]),
@@ -119,7 +134,14 @@ def _coerce_report(data: Any) -> dict[str, Any]:
 
 # --- Rendering -----------------------------------------------------------------
 def _render_markdown(r: dict[str, Any]) -> str:
-    lines: list[str] = [f"# {r['title']}", "", r["summary"], "", "## Reproduction Steps", ""]
+    lines: list[str] = [
+        f"# {r['title']}",
+        "",
+        r["summary"] or "_Not provided._",
+        "",
+        "## Reproduction Steps",
+        "",
+    ]
     if r["reproduction_steps"]:
         lines += [f"{i}. {step}" for i, step in enumerate(r["reproduction_steps"], 1)]
     else:
@@ -136,7 +158,7 @@ def _render_markdown(r: dict[str, Any]) -> str:
         "",
         f"## Severity: {r['severity']}",
         "",
-        r["severity_rationale"],
+        r["severity_rationale"] or "_Not provided._",
         "",
         "## Missing Evidence",
         "",
@@ -162,17 +184,30 @@ def _input_blocks(raw_text: str, context: str) -> list[dict[str, str]]:
     return [{"type": "text", "text": text}]
 
 
-def _attempt(ctx: Any, instructions: str, input_blocks: list) -> Optional[dict[str, Any]]:
-    """One structured call. Returns a coerced report, or None if unusable."""
-    result = ctx.llm.complete_structured(
-        instructions=instructions,
-        input=input_blocks,
-        json_schema=schema.BUG_REPORT_OUTPUT_SCHEMA,
-        schema_name=_SCHEMA_NAME,
-        purpose=_PURPOSE,
-        temperature=_TEMPERATURE,
-        max_tokens=_MAX_TOKENS,
-    )
+def _attempt(
+    ctx: Any, instructions: str, input_blocks: list, max_tokens: int
+) -> dict[str, Any] | None:
+    """One structured call. Returns a coerced report, or None if unusable.
+
+    A ``ValueError`` from ``complete_structured`` — e.g. a host that enforces
+    the schema with the optional ``jsonschema`` package rejected the model's
+    output — is treated as an unusable result so the caller retries, mirroring
+    the path taken when the host returns ``parsed`` for us to validate.
+    Non-``ValueError`` failures (trust gate, auth, network) still propagate.
+    """
+    try:
+        result = ctx.llm.complete_structured(
+            instructions=instructions,
+            input=input_blocks,
+            json_schema=schema.BUG_REPORT_OUTPUT_SCHEMA,
+            schema_name=_SCHEMA_NAME,
+            purpose=_PURPOSE,
+            temperature=_TEMPERATURE,
+            max_tokens=max_tokens,
+        )
+    except ValueError as exc:  # host-side schema/parse rejection -> retryable
+        logger.debug("complete_structured rejected the call: %s", exc)
+        return None
     parsed = getattr(result, "parsed", None)
     if parsed is None:
         logger.debug("complete_structured returned no parsed JSON")
@@ -192,9 +227,11 @@ def _build_report(ctx: Any, raw_text: str, context: str) -> dict[str, Any]:
     instructions = prompts.build_instructions()
     blocks = _input_blocks(raw_text, context)
 
-    report = _attempt(ctx, instructions, blocks)
-    if report is None:  # retry once with a stricter directive
-        report = _attempt(ctx, f"{instructions}\n\n{_RETRY_SUFFIX}", blocks)
+    report = _attempt(ctx, instructions, blocks, _MAX_TOKENS)
+    if report is None:  # retry once with a stricter directive and more room
+        report = _attempt(
+            ctx, f"{instructions}\n\n{_RETRY_SUFFIX}", blocks, _RETRY_MAX_TOKENS
+        )
     if report is None:
         raise ValueError("model did not return a valid structured report after one retry")
     return report
@@ -228,7 +265,7 @@ def make_handler(ctx: Any) -> Callable[..., str]:
     return improve_bug_report
 
 
-def make_command(ctx: Any, tool_handler: Optional[Callable[..., str]] = None) -> Callable[[str], str]:
+def make_command(ctx: Any, tool_handler: Callable[..., str] | None = None) -> Callable[[str], str]:
     """Build the optional ``/improve-bug`` slash-command handler.
 
     Slash-command handlers receive the raw argument string and return a string

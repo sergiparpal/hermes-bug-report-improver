@@ -147,7 +147,7 @@ Tests mock `ctx.llm` and make **no network calls**:
 ```bash
 pytest                                   # run the suite
 coverage run --branch -m pytest          # with branch coverage
-coverage report                          # handler.py is reported (target: >=80%)
+coverage report                          # plugin modules reported (target: >=80%)
 ```
 
 If your system Python is externally managed (PEP 668) and `coverage` cannot be
@@ -158,8 +158,6 @@ python3 -m pip install --target=.covtools coverage
 PYTHONPATH=.covtools python3 -m coverage run --branch -m pytest
 PYTHONPATH=.covtools python3 -m coverage report
 ```
-
-See `NOTES.md` for the Hermes API verification this plugin was built against.
 
 ## Limitations (out of scope for v0.1.0)
 

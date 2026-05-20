@@ -20,7 +20,7 @@ TOOL_DESCRIPTION = (
 
 ALLOWED_FORMATS = ("markdown", "json")
 DEFAULT_FORMAT = "markdown"
-# Severity rubric (fixed in v0.1.0, §2.3) — single source of truth for both the
+# Severity rubric (fixed in v0.1.0) — single source of truth for both the
 # allowed levels and their definitions (referenced by the prompt and the README).
 SEVERITY_RUBRIC = {
     "critical": "data loss, security breach, full service outage, blocks all users.",
@@ -30,10 +30,11 @@ SEVERITY_RUBRIC = {
     "unknown": "insufficient signal in the input to assign a level.",
 }
 SEVERITY_LEVELS = tuple(SEVERITY_RUBRIC)
-MAX_RAW_TEXT_BYTES = 16 * 1024  # 16 KB cap on raw_text (plan Phase 4).
+MAX_RAW_TEXT_BYTES = 16 * 1024  # 16 KB cap on raw_text.
+MAX_TITLE_CHARS = 80  # Title length cap; enforced by the handler when coercing.
 
 # --- Input schema (what the agent passes to the tool) --------------------------
-# Per §2.1. Wrapped as a full tool schema: name/description/parameters.
+# Wrapped as a full tool schema: name/description/parameters.
 TOOL_SCHEMA = {
     "name": TOOL_NAME,
     "description": TOOL_DESCRIPTION,
@@ -67,13 +68,13 @@ TOOL_SCHEMA = {
 }
 
 # --- Output schema (what the model must return) --------------------------------
-# Enforced by ctx.llm.complete_structured(json_schema=...). Per §2.1.
+# Enforced by ctx.llm.complete_structured(json_schema=...).
 BUG_REPORT_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {
             "type": "string",
-            "description": "Concise bug title, at most 80 characters.",
+            "description": f"Concise bug title, at most {MAX_TITLE_CHARS} characters.",
         },
         "summary": {"type": "string", "description": "One or two sentences."},
         "reproduction_steps": {
