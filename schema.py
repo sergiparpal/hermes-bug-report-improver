@@ -31,6 +31,7 @@ SEVERITY_RUBRIC = {
 }
 SEVERITY_LEVELS = tuple(SEVERITY_RUBRIC)
 MAX_RAW_TEXT_BYTES = 16 * 1024  # 16 KB cap on raw_text.
+MAX_CONTEXT_BYTES = 4 * 1024  # 4 KB cap on the optional context string.
 MAX_TITLE_CHARS = 80  # Title length cap; enforced by the handler when coercing.
 
 # --- Input schema (what the agent passes to the tool) --------------------------

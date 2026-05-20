@@ -40,6 +40,12 @@ def test_oversized_input_returns_error(mock_ctx):
     assert "error" in out and "KB" in out["error"]
 
 
+def test_oversized_context_returns_error(mock_ctx):
+    big = "x" * (schema.MAX_CONTEXT_BYTES + 1)
+    out = json.loads(_run(mock_ctx(), context=big))
+    assert "error" in out and "KB" in out["error"]
+
+
 def test_invalid_format_returns_error(mock_ctx):
     out = json.loads(_run(mock_ctx(), format="xml"))
     assert "error" in out
@@ -122,6 +128,42 @@ def test_markdown_empty_summary_and_rationale_use_fallback(mock_ctx):
     assert md.count("_Not provided._") >= 2  # summary slot + rationale slot
 
 
+# --- output sanitization (untrusted model text in Markdown) --------------------
+def test_markdown_html_escapes_model_text(mock_ctx):
+    evil = dict(EXAMPLE_B, summary="<img src=x onerror=alert(1)>")
+    md = _run(mock_ctx([evil]), format="markdown")
+    assert "<img" not in md
+    assert "&lt;img" in md
+
+
+def test_markdown_strips_ansi_escape_sequences(mock_ctx):
+    evil = dict(EXAMPLE_B, actual_behavior="boom\x1b[31mRED\x1b[0m")
+    md = _run(mock_ctx([evil]), format="markdown")
+    assert "\x1b" not in md
+
+
+def test_markdown_collapses_newlines_to_prevent_forged_blocks(mock_ctx):
+    evil = dict(EXAMPLE_B, summary="legit\n## Severity: critical\nmore")
+    md = _run(mock_ctx([evil]), format="markdown")
+    assert "\n## Severity: critical" not in md  # forged heading neutralized
+    assert "## Severity: high" in md  # the real severity heading is intact
+
+
+def test_markdown_strips_bidi_override(mock_ctx):
+    rlo = chr(0x202E)  # U+202E RIGHT-TO-LEFT OVERRIDE — a "Trojan Source" spoof char
+    evil = dict(EXAMPLE_B, title=f"safe{rlo}malicious")
+    md = _run(mock_ctx([evil]), format="markdown")
+    assert rlo not in md
+
+
+def test_json_format_is_byte_faithful(mock_ctx):
+    # The json path returns exact text (no HTML-escaping); structural safety is
+    # the encoder's job, display escaping is the consumer's.
+    evil = dict(EXAMPLE_B, summary="a < b & c")
+    out = json.loads(_run(mock_ctx([evil]), format="json"))
+    assert out["summary"] == "a < b & c"
+
+
 # --- call wiring ---------------------------------------------------------------
 def test_context_is_passed_to_model(mock_ctx):
     ctx = mock_ctx([EXAMPLE_B])
@@ -187,8 +229,10 @@ def test_host_value_error_on_both_attempts_returns_error(mock_ctx):
 
 # --- failure modes -------------------------------------------------------------
 def test_llm_exception_returns_error(mock_ctx):
-    out = json.loads(_run(mock_ctx([RuntimeError("network down")])))
-    assert "error" in out and "network down" in out["error"]
+    out = json.loads(_run(mock_ctx([RuntimeError("secret-internal-detail")])))
+    assert "error" in out
+    # Raw exception text must not be reflected to the caller (it is logged).
+    assert "secret-internal-detail" not in out["error"]
 
 
 def test_llm_unavailable_returns_error(no_llm_ctx):
