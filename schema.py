@@ -20,7 +20,16 @@ TOOL_DESCRIPTION = (
 
 ALLOWED_FORMATS = ("markdown", "json")
 DEFAULT_FORMAT = "markdown"
-SEVERITY_LEVELS = ("critical", "high", "medium", "low", "unknown")
+# Severity rubric (fixed in v0.1.0, §2.3) — single source of truth for both the
+# allowed levels and their definitions (referenced by the prompt and the README).
+SEVERITY_RUBRIC = {
+    "critical": "data loss, security breach, full service outage, blocks all users.",
+    "high": "blocks a major workflow, affects many users, no workaround available.",
+    "medium": "degraded experience, workaround exists, affects a subset of users.",
+    "low": "cosmetic, minor, edge case.",
+    "unknown": "insufficient signal in the input to assign a level.",
+}
+SEVERITY_LEVELS = tuple(SEVERITY_RUBRIC)
 MAX_RAW_TEXT_BYTES = 16 * 1024  # 16 KB cap on raw_text (plan Phase 4).
 
 # --- Input schema (what the agent passes to the tool) --------------------------
