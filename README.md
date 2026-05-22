@@ -12,7 +12,8 @@ exact error, steps, …) is listed under *missing evidence* rather than guessed.
 
 ## Requirements
 
-- Hermes Agent **v0.13+** (uses `ctx.llm`; verified against 0.14.0).
+- Hermes Agent **v0.13+** (uses `ctx.llm`; the `complete_structured` signature is
+  verified against hermes-agent `main`).
 - Python **3.11+** (matches Hermes).
 - No third-party runtime dependencies — standard library only.
 
@@ -149,8 +150,10 @@ model's output as untrusted too:
   cannot change the report's shape or add fields — only the free-text values.
 - **Markdown output is sanitized.** Rendered fields have control characters
   removed (including ESC, preventing ANSI escape injection in a terminal),
-  whitespace collapsed (preventing forged headings/lists), and `& < >` HTML-escaped
-  (preventing raw-HTML/XSS in an HTML renderer).
+  whitespace collapsed, a leading block-level marker (`#`, `-`/`*`/`+`, an
+  ordered-list `1.`, a code fence, or a table `|`) backslash-escaped (so a field
+  cannot forge a heading, list, code fence, or table at its block boundary), and
+  `& < >` HTML-escaped (preventing raw-HTML/XSS in an HTML renderer).
 - **Render Markdown safely downstream.** Markdown link/image syntax
   (`[…](javascript:…)`, `![](http://attacker/?leak)`) cannot be neutralized at the
   source without mangling legitimate text. Consumers that render this Markdown as
@@ -178,8 +181,10 @@ coverage run --branch -m pytest          # with branch coverage
 coverage report                          # plugin modules reported (target: >=80%)
 ```
 
-If your system Python is externally managed (PEP 668) and `coverage` cannot be
-installed normally, install it into a local directory and point `PYTHONPATH` at it:
+`pytest` and `coverage` are declared under the `dev` extra, so `pip install -e ".[dev]"`
+sets up a checkout where your environment permits installs. If your system Python is
+externally managed (PEP 668) and packages cannot be installed that way, install
+`coverage` into a local directory instead and point `PYTHONPATH` at it:
 
 ```bash
 python3 -m pip install --target=.covtools coverage

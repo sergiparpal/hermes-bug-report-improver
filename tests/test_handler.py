@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
-from bug_report_improver import domain, engine, handler, prompts, schema, validation
+from hermes_bug_report_improver import (
+    domain,
+    engine,
+    handler,
+    prompts,
+    rendering,
+    schema,
+    validation,
+)
 
 EXAMPLE_A = prompts.FEW_SHOT_EXAMPLES[0]["output"]  # vague   -> unknown
 EXAMPLE_B = prompts.FEW_SHOT_EXAMPLES[1]["output"]  # detailed-> high
@@ -169,6 +181,70 @@ def test_json_format_is_byte_faithful(mock_ctx):
     assert out["summary"] == "a < b & c"
 
 
+# --- leading block-marker escaping (a field rendered at a block boundary) -------
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("# h", "\\# h"),
+        ("## Severity: critical", "\\## Severity: critical"),
+        ("- item", "\\- item"),
+        ("* item", "\\* item"),
+        ("+ item", "\\+ item"),
+        ("| a | b |", "\\| a | b |"),
+        ("```", "\\" + "```"),  # code fence
+        ("~~~", "\\~~~"),  # code fence (tilde)
+        ("1. step", "1\\. step"),  # ordered list: escape the delimiter
+        ("1) step", "1\\) step"),
+        ("12. step", "12\\. step"),  # multi-digit marker
+    ],
+)
+def test_sanitize_escapes_leading_block_markers(raw, expected):
+    # A field whose entire (whitespace-collapsed) content begins with a block
+    # marker would otherwise forge that block, since each field is rendered at a
+    # block boundary. Only the leading marker is escaped.
+    assert rendering._sanitize_for_md(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "plain text",
+        "3.14 is the ratio",  # decimal -> not an ordered-list marker
+        "v1.2.3 was released",  # version string
+        "uses - and # mid-text",  # markers only mid-text
+        "> quoted",  # leading > is HTML-escaped to &gt;, not backslashed
+    ],
+)
+def test_sanitize_does_not_overescape_legitimate_text(raw):
+    assert "\\" not in rendering._sanitize_for_md(raw)
+
+
+def test_sanitize_empty_or_blank_is_not_escaped():
+    # Guard the empty-prefix edge: "" must not become a lone backslash.
+    assert rendering._sanitize_for_md("") == ""
+    assert rendering._sanitize_for_md("   ") == ""  # whitespace collapses away
+    assert rendering._sanitize_for_md("\x1b\x1b") == ""  # control chars stripped away
+
+
+def test_markdown_neutralizes_field_that_is_itself_a_heading(mock_ctx):
+    # End-to-end: a summary that is itself a heading must not render as a heading
+    # block (it would spoof a section); the real, validated severity stays intact.
+    evil = dict(EXAMPLE_B, summary="## Severity: critical")
+    md = _run(mock_ctx([evil]), format="markdown")
+    assert not any(line.startswith("## Severity: critical") for line in md.splitlines())
+    assert "## Severity: high" in md
+
+
+def test_markdown_neutralizes_field_that_is_a_code_fence(mock_ctx):
+    # End-to-end: a lone code fence must not open a block that swallows the rest
+    # of the report (the real Severity / Missing Evidence sections).
+    evil = dict(EXAMPLE_B, actual_behavior="```")
+    md = _run(mock_ctx([evil]), format="markdown")
+    assert not any(line.strip() == "```" for line in md.splitlines())
+    assert "## Severity: high" in md
+    assert "## Missing Evidence" in md
+
+
 # --- call wiring ---------------------------------------------------------------
 def test_context_is_passed_to_model(mock_ctx):
     ctx = mock_ctx([EXAMPLE_B])
@@ -326,7 +402,7 @@ def test_instructions_include_rubric_and_examples():
 
 # --- registration (covers __init__.register) -----------------------------------
 def test_register_wires_tool():
-    import bug_report_improver as plugin
+    import hermes_bug_report_improver as plugin
 
     captured: dict = {}
 
@@ -362,7 +438,7 @@ def test_command_prettifies_error(no_llm_ctx):
 
 
 def test_register_also_registers_command():
-    import bug_report_improver as plugin
+    import hermes_bug_report_improver as plugin
 
     tools: dict = {}
     cmds: dict = {}
@@ -382,7 +458,7 @@ def test_register_also_registers_command():
 
 
 def test_register_survives_command_failure():
-    import bug_report_improver as plugin
+    import hermes_bug_report_improver as plugin
 
     tools: dict = {}
 
@@ -397,3 +473,54 @@ def test_register_survives_command_failure():
 
     plugin.register(C())  # must not raise
     assert tools["name"] == "improve_bug_report"  # core tool still registered
+
+
+# --- Hermes compatibility shim (root __init__.py) ------------------------------
+# Hermes loads a plugin by executing the root __init__.py via importlib with
+# submodule_search_locations, NOT by putting the (hyphenated) plugin directory on
+# sys.path. This reproduces that load from a foreign CWD with PYTHONPATH cleared
+# and the package not installed, so it fails if the shim stops making
+# `hermes_bug_report_improver` importable on its own.
+_HERMES_LOADER = """\
+import importlib.util, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "bug_report_improver_plugin",
+    root / "__init__.py",
+    submodule_search_locations=[str(root)],
+)
+mod = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = mod
+spec.loader.exec_module(mod)
+
+captured = {}
+class Ctx:
+    llm = None
+    def register_tool(self, **kw):
+        captured.update(kw)
+    def register_command(self, **kw):
+        pass
+
+mod.register(Ctx())
+assert captured["name"] == "improve_bug_report", captured
+assert captured["toolset"] == "qa", captured
+assert callable(captured["handler"]), captured
+print("SHIM_OK")
+"""
+
+
+def test_root_shim_loads_the_way_hermes_does(tmp_path):
+    root = Path(__file__).resolve().parent.parent
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)  # don't let an inherited path import the package for us
+    proc = subprocess.run(
+        [sys.executable, "-c", _HERMES_LOADER, str(root)],
+        cwd=str(tmp_path),  # a CWD that is NOT the plugin dir
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "SHIM_OK" in proc.stdout

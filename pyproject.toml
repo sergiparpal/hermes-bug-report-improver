@@ -16,28 +16,25 @@ keywords = ["hermes", "hermes-agent", "plugin", "bug-report", "qa"]
 # Dev/test tooling only; the plugin itself has no runtime dependencies.
 dev = ["pytest>=7", "coverage>=7"]
 
-# Flat layout: the plugin modules live at the repo root and form a package
-# (relative imports such as `from . import schema` require this). Map that
-# package explicitly so the project is pip-installable; `tests/` is excluded.
-# The name has three intentional forms: the plugin directory is
-# `hermes-bug-report-improver` (hyphenated), the pip-installed package is
-# `hermes_bug_report_improver` (below), and the tests import it as
-# `bug_report_improver` (see tests/conftest.py). Relative imports make the code
-# agnostic to which name it is loaded under.
-[tool.setuptools]
-packages = ["hermes_bug_report_improver"]
-
-[tool.setuptools.package-dir]
-hermes_bug_report_improver = "."
+# The distribution is `hermes-bug-report-improver` (hyphenated) but the import
+# package is `hermes_bug_report_improver` (a real subdirectory whose modules use
+# relative imports such as `from . import schema`). Discover that package
+# explicitly; `tests/` and the root Hermes shim (`./__init__.py`) stay out of the
+# built distribution.
+[tool.setuptools.packages.find]
+include = ["hermes_bug_report_improver*"]
+exclude = ["tests*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Put the repo root on sys.path so tests can `import hermes_bug_report_improver`
+# without installing the package (the system Python is externally managed).
+pythonpath = ["."]
 
 [tool.coverage.run]
 branch = true
-source = ["."]
-omit = ["tests/*", ".covtools/*"]
+source = ["hermes_bug_report_improver"]
 
 [tool.coverage.report]
 show_missing = true

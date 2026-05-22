@@ -1,46 +1,28 @@
-"""hermes-bug-report-improver — a Hermes Agent plugin.
+"""Hermes compatibility shim — the plugin's load-time entry point.
 
-Registers a single tool, ``improve_bug_report``, in the ``qa`` toolset. Given a
-poorly written or incomplete bug report, the tool returns a structured version
-(title, reproduction steps, expected/actual behavior, suggested severity, and a
-list of missing evidence) by delegating the rewrite to the agent's own model via
-``ctx.llm.complete_structured`` — no provider keys live in this plugin.
+Hermes loads a plugin by executing the ``__init__.py`` at the plugin *directory*
+root. That directory is ``hermes-bug-report-improver`` (hyphenated, so not a
+valid import name); the real implementation lives in the sibling
+``hermes_bug_report_improver`` package. This file just re-exports its
+``register`` entry point.
+
+Hermes loads this file via ``importlib`` (``spec_from_file_location`` with
+``submodule_search_locations``) and does *not* put the plugin directory on
+``sys.path``, so the absolute import below would not resolve on its own when the
+plugin is dropped into ``~/.hermes/plugins/`` without being pip-installed (the
+install path documented in the README). Adding this file's own directory to
+``sys.path`` makes ``hermes_bug_report_improver`` importable by its real name in
+every case — pip-installed or not — without changing how the package's own
+modules import each other (always relative, within the package).
 """
 
-from __future__ import annotations
+import os
+import sys
 
-import logging
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.append(_HERE)
 
-from . import schema
-from .handler import make_command, make_handler
-from .host import PluginHost
+from hermes_bug_report_improver import register  # noqa: E402  (after sys.path setup)
 
-logger = logging.getLogger(__name__)
-
-
-def register(ctx: PluginHost) -> None:
-    """Entry point Hermes calls once at plugin load time."""
-    tool_handler = make_handler(ctx)
-    ctx.register_tool(
-        name=schema.TOOL_NAME,
-        toolset=schema.TOOLSET,
-        schema=schema.TOOL_SCHEMA,
-        handler=tool_handler,
-    )
-    logger.debug(
-        "hermes-bug-report-improver: registered %s in toolset %r",
-        schema.TOOL_NAME,
-        schema.TOOLSET,
-    )
-
-    # Optional convenience: a /improve-bug slash command. Guarded so a signature
-    # mismatch on some Hermes version never blocks the core tool from loading.
-    try:
-        ctx.register_command(
-            name="improve-bug",
-            handler=make_command(ctx),
-            description="Rewrite a raw bug report into a structured one (Markdown).",
-            args_hint="<raw bug report text>",
-        )
-    except Exception as exc:  # noqa: BLE001 - command is optional
-        logger.warning("hermes-bug-report-improver: /improve-bug not registered: %s", exc)
+__all__ = ["register"]

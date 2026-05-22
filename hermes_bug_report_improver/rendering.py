@@ -16,6 +16,42 @@ import unicodedata
 from .domain import ImprovedBugReport
 
 
+# Block-level Markdown markers that open a new block when they start a line: ATX
+# heading (#), bullet list (- * +), code fence (` and ~), and table (|).
+# Blockquote (>) is defused separately by HTML-escaping it to &gt;; ordered-list
+# markers ("1." / "1)") are handled in _escape_leading_block_marker below.
+_LEADING_BLOCK_MARKERS = "#-*+`~|"
+
+
+def _escape_leading_block_marker(text: str) -> str:
+    """Backslash-escape a *leading* block-level Markdown marker.
+
+    Each field is rendered at a block boundary, so a field whose text *begins*
+    with a block marker would forge that block — a fake heading, list, code fence,
+    or table — even after internal whitespace has been collapsed (collapsing only
+    removes markers introduced by an embedded newline). Escaping just the leading
+    marker neutralizes that without touching punctuation that legitimately appears
+    mid-text, and it is visually lossless: ``\\#`` renders as ``#``. No-op on the
+    empty string (guards against ``"" in _LEADING_BLOCK_MARKERS`` being true).
+    """
+    head = text[:1]
+    if not head:
+        return text
+    if head in _LEADING_BLOCK_MARKERS:
+        return "\\" + text
+    if head.isdigit():
+        # Ordered-list marker: digits, then "." or ")", then a space or end of
+        # line. Escape the delimiter rather than prepending "\\" (a digit is not
+        # punctuation, so "\\1" would render literally), and only for a real list
+        # marker — so decimals and versions ("3.14", "v1.2.3") stay untouched.
+        i = 1
+        while i < len(text) and text[i].isdigit():
+            i += 1
+        if text[i : i + 1] in ".)" and text[i + 1 : i + 2] in ("", " "):
+            return f"{text[:i]}\\{text[i:]}"
+    return text
+
+
 def _sanitize_for_md(text: str) -> str:
     """Make a model-produced string safe to embed in the rendered Markdown.
 
@@ -24,12 +60,17 @@ def _sanitize_for_md(text: str) -> str:
     shown to humans — in a terminal for ``/improve-bug``, or rendered as HTML
     downstream. So before interpolating any field we:
 
-    1. collapse all whitespace to single spaces, so a stray newline cannot forge a
-       new block (a fake ``## Severity`` heading or list item);
+    1. collapse all whitespace to single spaces, so an *embedded* newline cannot
+       forge a new block (a fake ``## Severity`` heading or list item);
     2. drop Unicode control/format characters, removing the ESC byte (ANSI escape
        injection in a terminal) and bidi overrides (text-spoofing);
     3. HTML-escape ``& < >``, so the text cannot smuggle live HTML / ``<script>``
-       through a renderer that passes raw HTML.
+       through a renderer that passes raw HTML (this also defuses a leading ``>``
+       blockquote);
+    4. backslash-escape a *leading* block-level Markdown marker, so a field whose
+       text begins with ``#``, ``-``/``*``/``+``, an ordered-list ``1.``/``1)``, a
+       code fence, or a table ``|`` cannot forge that block at its block boundary
+       (step 1 only neutralizes markers introduced by an embedded newline).
 
     This does NOT neutralize Markdown link/image syntax (``[x](javascript:…)``,
     ``![](http://attacker/?leak)``); escaping those would mangle legitimate report
@@ -40,7 +81,8 @@ def _sanitize_for_md(text: str) -> str:
     """
     text = " ".join(text.split())
     text = "".join(ch for ch in text if unicodedata.category(ch)[0] != "C")
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return _escape_leading_block_marker(text)
 
 
 def _text_block(title: str, body: str) -> str:

@@ -1,43 +1,14 @@
-"""Pytest fixtures: load the (hyphenated) plugin dir as a package the way Hermes
-does, and provide a configurable fake ``ctx.llm`` so no real LLM is ever called.
+"""Pytest fixtures: a configurable fake ``ctx.llm`` so no real LLM is ever called.
+
+Tests import the plugin by its real package name (``hermes_bug_report_improver``).
+``pyproject.toml`` puts the repo root on ``sys.path`` for the session
+(``[tool.pytest.ini_options] pythonpath = ["."]``), so no custom loader is needed
+here — this module only provides the fakes.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import pytest
-
-PLUGIN_ROOT = Path(__file__).resolve().parent.parent
-# This unit has three names, all intentional: the plugin/directory is
-# ``hermes-bug-report-improver`` (hyphenated, so not importable as-is); pip
-# installs it as ``hermes_bug_report_improver`` (see pyproject.toml); and at
-# runtime Hermes loads the directory under a plain module name. Relative imports
-# (``from . import schema``) keep the modules agnostic to which name is used, so
-# the tests pick the short ``bug_report_improver`` and load it explicitly below.
-PKG = "bug_report_improver"
-
-
-def _load_plugin():
-    """Mirror hermes_cli/plugins.py: load the dir as a package so relative
-    imports (``from . import schema``) resolve, then register it in sys.modules."""
-    if PKG in sys.modules:
-        return sys.modules[PKG]
-    spec = importlib.util.spec_from_file_location(
-        PKG,
-        PLUGIN_ROOT / "__init__.py",
-        submodule_search_locations=[str(PLUGIN_ROOT)],
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[PKG] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-# Load at import time so test modules can `from bug_report_improver import ...`.
-_load_plugin()
 
 
 class _FakeResult:

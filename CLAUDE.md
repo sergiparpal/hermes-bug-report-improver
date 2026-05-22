@@ -9,7 +9,7 @@ A single-tool [Hermes Agent](https://github.com/NousResearch/hermes-agent) plugi
 ## Commands
 
 ```bash
-python3 -m pytest                      # full suite (51 tests; -q is preset in pyproject.toml)
+python3 -m pytest                      # full suite (71 tests; -q is preset in pyproject.toml)
 python3 -m pytest tests/test_handler.py::test_detailed_input_returns_high_severity  # one test
 python3 -m pytest -k severity          # tests matching an expression
 ```
@@ -25,7 +25,7 @@ Tests mock `ctx.llm` (see `tests/conftest.py`) and never hit a real model.
 
 ## Architecture
 
-One module per request stage. `__init__.register(ctx)` registers the tool plus the optional `/improve-bug` command at load time. A request then runs:
+One module per request stage, all inside the `hermes_bug_report_improver/` package. The package's `register(ctx)` (in its `__init__.py`) registers the tool plus the optional `/improve-bug` command at load time. A request then runs:
 
 `handler._improve` → `validation.validate_input` → `engine.build_report` (the model call) → `domain.ImprovedBugReport` → `rendering.format_output`
 
@@ -40,8 +40,8 @@ One module per request stage. `__init__.register(ctx)` registers the tool plus t
 
 - **Two separate validation boundaries — don't conflate them.** `validation.validate_input` guards the untrusted *tool arguments* (presence, type, byte size, format enum). `domain.ImprovedBugReport.from_parsed` validates the untrusted *model output* (required fields, allow-listed severity, array types).
 
-- **`rendering._sanitize_for_md` is the security chokepoint.** Model text is attacker-influenced, so before embedding any field in Markdown it collapses whitespace (no forged headings), strips Unicode control/format chars (ANSI + bidi), and HTML-escapes `& < >`. The **`json` output is intentionally exempt** — it returns byte-faithful text and leaves display escaping to the consumer. Preserve that asymmetry when editing rendering.
+- **`rendering._sanitize_for_md` is the security chokepoint.** Model text is attacker-influenced, so before embedding any field in Markdown it collapses whitespace, strips Unicode control/format chars (ANSI + bidi), HTML-escapes `& < >`, and backslash-escapes a *leading* block-level marker so a field cannot forge a heading/list/code-fence/table at its block boundary (whitespace collapse alone only stops markers introduced by an embedded newline). The **`json` output is intentionally exempt** — it returns byte-faithful text and leaves display escaping to the consumer. Preserve that asymmetry when editing rendering.
 
 - **The title invariant** (single line, ≤ `MAX_TITLE_CHARS`) is enforced in `ImprovedBugReport.__post_init__`, so every construction path — and therefore both output formats — inherits it.
 
-- **Flat layout + the triple name.** The modules live at the repo root and form a package, so imports between them must be relative (`from . import schema`), never `import schema`. The unit has three intentional names: the plugin **directory** is `hermes-bug-report-improver` (hyphenated, not importable as-is); pip installs it as `hermes_bug_report_improver` (see `pyproject.toml`); the tests load it as `bug_report_improver` (see `tests/conftest._load_plugin`, which mirrors how Hermes loads the directory via `importlib`). Relative imports keep the modules agnostic to which name they're loaded under — don't hard-code any of them.
+- **Package layout + the root shim.** The implementation modules live in the `hermes_bug_report_improver/` package and import each other relatively (`from . import schema`), never absolutely. Two names remain, now cleanly split: the plugin **directory** is `hermes-bug-report-improver` (hyphenated, so not importable as-is), while the **import package** (and pip distribution's underscore form) is `hermes_bug_report_improver`. Hermes loads a plugin by executing the directory's root `__init__.py`, which is a thin compatibility shim: it puts its own directory on `sys.path` and re-exports `register` from the package (`from hermes_bug_report_improver import register`), so the plugin loads whether pip-installed or dropped uninstalled into `~/.hermes/plugins/`. Tests and tooling import the package directly — `pyproject.toml` sets `pythonpath = ["."]` so pytest finds it without an install, and `test_root_shim_loads_the_way_hermes_does` exercises the shim in a subprocess the way Hermes does. Keep intra-package imports relative; never hard-code the directory or package name.
